@@ -6,11 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.preprocessing import MinMaxScaler
 
-# --- 1. Path Configuration (Dynamic Version) ---
-# 这样无论文件夹放在哪，Python 都会自动找到当前目录
+# --- 1. Path Configuration ---
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+
 def gaussian_weight(d, d0=20):
-    """Gaussian decay function for 2SFCA step."""
+    """Gaussian decay function for 2SFCA spatial accessibility calculation."""
     if d <= d0:
         num = np.exp(-0.5 * (d / d0)**2) - np.exp(-0.5)
         den = 1 - np.exp(-0.5)
@@ -39,12 +39,13 @@ def calculate_2sfca(demand_df, supply_df, lines_df, d0=20):
 
 @st.cache_data
 def load_resources():
+    """Load and cache CSV data with robust encoding and data type handling."""
     def read_csv_safe(file_name, dtypes=None):
         path = os.path.join(BASE_PATH, file_name)
         for enc in ['utf-8-sig', 'gbk', 'utf-8']:
             try:
                 df = pd.read_csv(path, dtype=dtypes, encoding=enc)
-                df.columns = df.columns.str.strip() # Clean column names
+                df.columns = df.columns.str.strip()
                 return df
             except: continue
         return None
@@ -52,9 +53,8 @@ def load_resources():
     demand = read_csv_safe("Demand_Dataset.csv", {'community_id': str})
     supply = read_csv_safe("Supply_Dataset.csv", {'hospital_id': str})
     lines = read_csv_safe("Lines.csv", {'community_id': str, 'hospital_id': str})
-    # 加载带有全属性和坐标的 Candidates.csv
-    candidates = read_csv_safe("Candidates.csv")
-    
+    # Load candidate sites with ID as string
+    candidates = read_csv_safe("Candidates.csv", {'community_id': str})
     return demand, supply, lines, candidates
 
 # --- 2. Interface UI ---
@@ -63,12 +63,11 @@ st.title("Hong Kong Healthcare Site Selection Decision Support System")
 
 demand_df, supply_df, lines_df, candidates_df = load_resources()
 
-# Session state to persist calculation results
 if 'final_results' not in st.session_state:
     st.session_state.final_results = None
 
 if demand_df is not None:
-    # Sidebar: Weight Controls
+    # Sidebar: Multi-Criteria Evaluation (MCE) Weights
     st.sidebar.header("MCE Weight Configuration")
     w_ai = st.sidebar.slider("Medical Urgency (Ai)", 0.0, 1.0, 0.45)
     w_den = st.sidebar.slider("Population Density", 0.0, 1.0, 0.20)
@@ -76,19 +75,19 @@ if demand_df is not None:
     w_con = st.sidebar.slider("Transport Convenience", 0.0, 1.0, 0.15)
 
     if st.button("🚀 Execute Spatial Analysis"):
-        with st.spinner('Synchronizing spatial layers and calculating...'):
+        with st.spinner('Performing spatial analysis and weight calculations...'):
             ai_df = calculate_2sfca(demand_df, supply_df, lines_df)
             st.session_state.final_results = demand_df.merge(ai_df, on='community_id', how='inner')
 
-    # Display Results
+    # Display Analysis Results
     if st.session_state.final_results is not None:
         df = st.session_state.final_results.copy()
         scaler = MinMaxScaler()
         
-        # Normalize Score: Lower accessibility (Ai) = Higher Priority (Score)
+        # Priority Score: Lower accessibility results in higher priority
         df['Ai_Score'] = 1 - scaler.fit_transform(df[['Ai']])
         
-        # Total Suitability Calculation (MCE)
+        # Weighted Suitability Score
         tw = w_ai + w_den + w_str + w_con
         if tw > 0:
             df['Total_Score'] = (
@@ -98,7 +97,6 @@ if demand_df is not None:
                 df['Convenience'] * (w_con/tw)
             )
 
-        # Main Layout: Table and Map
         col1, col2 = st.columns([1, 1.8])
         
         with col1:
@@ -113,7 +111,7 @@ if demand_df is not None:
         with col2:
             st.subheader("Spatial Suitability Analysis")
             
-            # Layer 1: Suitability Heatmap (TPU Bubbles)
+            # Layer 1: Suitability Heatmap (Bubbles represent TPU communities)
             fig = px.scatter_mapbox(
                 df, lat="lat", lon="lon", 
                 color="Total_Score", size="Pop_Real",
@@ -124,24 +122,36 @@ if demand_df is not None:
                 labels={'Total_Score': 'Suitability Score'} 
             )
 
-            # Layer 2: Candidate Sites (Blue Markers from your new CSV)
+            # Layer 2: Top 10 Dynamic Candidate Sites
             if candidates_df is not None:
-                # 只显示 ID，如果有其他有意义的列（比如面积、地类）再加进去
-                hover_text = [f"Proposed Site ID: {row.get('CID', 'N/A')}" for _, row in candidates_df.iterrows()]
+                temp_candidates = candidates_df.copy()
+                
+                # Critical Step: Align data types before merge to prevent ValueError
+                temp_candidates['community_id'] = temp_candidates['community_id'].astype(str)
+                score_data = df[['community_id', 'Total_Score']].copy()
+                score_data['community_id'] = score_data['community_id'].astype(str)
+
+                # Merge scores and filter the 10 highest-scoring sites based on weights
+                scored_sites = temp_candidates.merge(score_data, on='community_id', how='inner')
+                top_candidates = scored_sites.sort_values(by='Total_Score', ascending=False).head(10)
+
+                hover_text = [
+                    f"Candidate ID: {row['community_id']}<br>Suitability Score: {row['Total_Score']:.4f}"
+                    for _, row in top_candidates.iterrows()
+                ]
 
                 fig.add_trace(go.Scattermapbox(
-                    lat=candidates_df['lat'],
-                    lon=candidates_df['lon'],
+                    lat=top_candidates['lat'],
+                    lon=top_candidates['lon'],
                     mode='markers',
                     marker=go.scattermapbox.Marker(
-                        size=14, color='#007BFF', opacity=0.9
+                        size=6, color='#007BFF', opacity=1.0
                     ),
-                    name='Candidate Locations (MCE Targets)',
+                    name='Top 10 Recommended Sites',
                     hoverinfo='text',
                     text=hover_text
                 ))
 
-            # UI Final Touches
             fig.update_layout(
                 margin={"r":0,"t":0,"l":0,"b":0},
                 legend=dict(
@@ -151,4 +161,4 @@ if demand_df is not None:
                 )
             )
             st.plotly_chart(fig, use_container_width=True)
-            st.info("💡 **Visualization Guide:** The **Red Bubbles** indicate TPU-level demand urgency (calculated via 2SFCA). The **Blue Markers** represent specific candidate site locations from the architectural analysis.")
+            st.info("💡 **Legend:** Red bubbles = Community demand urgency. Blue dots = Top 10 specific site recommendations.")
