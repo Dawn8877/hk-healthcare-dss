@@ -12,6 +12,6 @@ Hong Kong Hospital Site Selection System Based on 2SFCA Algorithm
 
 #Results:<img width="1698" height="858" alt="image" src="https://github.com/user-attachments/assets/c64712b7-4ae9-4e91-aed5-ca3d0244a5c1" />
 
-#URL:https://hk-healthcare-siteselection-wanglu.streamlit.app/
+#URL:https://hk-healthcare-siteselection.streamlit.app/
 
 
